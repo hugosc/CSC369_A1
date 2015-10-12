@@ -607,7 +607,7 @@ static int init_function(void)
 		iterator->monitored = 0;
 		iterator->intercepted = 0;
 		iterator->listcount = 0;
-		INIT_LIST_HEAD(&iterator->my_list)
+		INIT_LIST_HEAD(&iterator->my_list);
 	}
 
 	spin_unlock(&pidlist_lock);
