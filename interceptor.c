@@ -540,7 +540,7 @@ asmlinkage long my_syscall_stopmon(int syscall, int pid)
 
 				if (table[syscall].monitored > 0) {
 					table[syscall].monitored = 0;
-					spin_unlock(&pidlist_lock)
+					spin_unlock(&pidlist_lock);
 				} else {
 					printk(KERN_ERR "all processes already released for system call %d.\n", syscall);
 					return -EBUSY;
@@ -600,12 +600,10 @@ static int init_function(void)
 
 	spin_lock(&pidlist_lock);
 
-	iterator = table;
-	for (;iterator <= table + NR_syscalls; iterator++) {
+	for (iterator = table; iterator <= table + NR_syscalls; iterator++) {
 		iterator->monitored = 0;
 		iterator->intercepted = 0;
 		iterator->listcount = 0;
-		LIST_HEAD(iterator->my_list);
 	}
 
 	spin_unlock(&pidlist_lock);
@@ -642,19 +640,11 @@ static void exit_function(void)
 
 	spin_lock(&pidlist_lock);
 
-	sysc = 0;
-	for (;sysc <= NR_syscalls; sysc++) {
-		destroy_list(sysc);	
+	for (sysc = 0; sysc <= NR_syscalls; sysc++) {
+		destroy_list(sysc);
 	}
 
 	spin_unlock(&pidlist_lock);
-
-	return 0;
-
-
-
-
-
 }
 
 module_init(init_function);
