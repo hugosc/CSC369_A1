@@ -16,6 +16,12 @@ MODULE_DESCRIPTION("My kernel module");
 MODULE_AUTHOR("Me");
 MODULE_LICENSE("GPL");
 
+//------Auxiliary functions-----------------------
+asmlinkage long my_syscall_intercept(int syscall, int pid);
+asmlinkage long my_syscall_release(int syscall, int pid);
+asmlinkage long my_syscall_startmon(int syscall, int pid);
+asmlinkage long my_syscall_stopmon(int syscall, int pid);
+
 //----- System Call Table Stuff ------------------------------------
 /* Symbol that allows access to the kernel system call table */
 extern void* sys_call_table[];
@@ -251,9 +257,13 @@ void (*orig_exit_group)(int);
  */
 void my_exit_group(int status)
 {
+	spin_lock(pidlist_lock);
 
+	del_pid(current->pid);
 
+	spin_unlock(pidlist_lock);
 
+	orig_exit_group(status);
 }
 //----------------------------------------------------------------
 
@@ -275,13 +285,12 @@ void my_exit_group(int status)
  *     ax, bx, cx, dx, si, bi, and bp registers (see the pt_regs struct).
  * - Don't forget to call the original system call, so we allow processes to proceed as normal.
  */
-asmlinkage long interceptor(struct pt_regs reg) {
-
-
-
-
-
-	return 0; // Just a placeholder, so it compiles with no warnings!
+asmlinkage long interceptor(struct pt_regs reg) 
+{
+	if (table[reg.ax].monitored == 2 || check_pid_monitored(reg.ax, current->pid)) {
+		log_message(current->pid, reg.ax, reg.bx, reg.cx, reg.dx, reg.si, reg.bi, reg.bp);
+	}
+	return table[reg.ax].f(reg); 
 }
 
 /**
@@ -335,12 +344,218 @@ asmlinkage long interceptor(struct pt_regs reg) {
  */
 asmlinkage long my_syscall(int cmd, int syscall, int pid) {
 
+	switch (cmd) {
+		case REQUEST_SYSCALL_INTERCEPT :
+			return my_syscall_intercept(syscall, pid);
+			break;
+		case REQUEST_SYSCALL_RELEASE :
+			return my_syscall_release(syscall, pid);
+			break;
+		case REQUEST_START_MONITORING :
+			return my_syscall_startmon(syscall, pid);
+			break;
+		case  REQUEST_STOP_MONITORING :
+			return my_syscall_stopmon(syscall, pid);
+			break;
+		default :
+			return -EINVAL;
+	}
+}
 
+asmlinkage long my_syscall_intercept(int syscall, int pid)
+{
+	if (syscall <= NR_syscalls && syscall >= 0 && syscall != MY_CUSTOM_SYSCALL) { //checking if syscall is valid
+		
+		if (current_uid() == 0) { //checking if root
 
+			if (!table[syscall].intercepted) {
 
+				spin_lock(calltable_lock);
+				set_addr_rw((unsigned long)(sys_call_table + syscall));
 
+				table[syscall].f =  & sys_call_table[syscall];
+				sys_call_table[syscall] = & interceptor;
+
+				set_addr_ro((unsigned long)(sys_call_table + syscall));
+				spin_unlock(calltable_lock);
+
+				spin_lock(pidlist_lock);	
+				table[syscall].intercepted = 1;
+				spin_unlock(pidlist_lock);
+
+			} else {
+				printk(KERN_ERR "System call %d already intercepted.\n", syscall);
+				return -EBUSY;
+			}
+		} else {
+			
+			printk(KERN_ERR "User does not have permission (root).\n");
+			return -EPERM;
+		}
+	} else {
+		
+		printk(KERN_ERR "%d is not a valid system call number.\n", syscall);
+		return -EINVAL;
+	}
 
 	return 0;
+}
+
+asmlinkage long my_syscall_release(int syscall, int pid)
+{
+	if (syscall <= NR_syscalls && syscall >= 0 && syscall != MY_CUSTOM_SYSCALL) { //checking if syscall is valid
+		
+		if (current_uid() == 0) { //checking if root
+
+			if (table[syscall].intercepted) {
+
+				spin_lock(calltable_lock);
+				set_addr_rw((unsigned long) (table + syscall));
+
+				sys_call_table[syscall] = & table[syscall].f;
+
+				set_addr_ro((unsigned long) (table + syscall));
+				spin_unlock(calltable_lock);
+
+				spin_lock(pidlist_lock);	
+				table[syscall].intercepted = 0;
+				spin_unlock(pidlist_lock);
+
+			} else {
+				printk(KERN_ERR "System call %d not intercepted.\n", syscall);
+				return -EBUSY;
+			}
+		} else {
+			
+			printk(KERN_ERR "User does not have permission (root).\n");
+			return -EPERM;
+		}
+	} else {
+		
+		printk(KERN_ERR "%d is not a valid system call number.\n", syscall);
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+asmlinkage long my_syscall_startmon(int syscall, int pid) 
+{
+	if (pid) {
+
+		if (pid_task(find_vpid(pid), PIDTYPE_PID) && 
+			syscall <= NR_syscalls && syscall >= 0 && syscall != MY_CUSTOM_SYSCALL) {
+
+			if (check_pid_from_list(pid, current->pid) == 0 || current_uid() == 0) {
+
+				spin_lock(pidlist_lock);
+
+				if (!check_pid_monitored(syscall, pid)) {
+					int ret_val = add_pid_sysc(pid, syscall);	
+					if (ret_val == 0 && table[syscall].monitored == 0) {
+						table[syscall].monitored = 1;
+					}
+					spin_unlock(pidlist_lock);
+				} else {
+					printk(KERN_ERR "process %d already monitored for syscall %d.\n", pid, syscall);
+					spin_unlock(pidlist_lock);
+					return -EBUSY;
+				}
+			} else {
+
+				printk(KERN_ERR "process %d does not have permission", current->pid);
+				return -EPERM;
+			}
+
+		} else {
+
+			printk(KERN_ERR "process with pid %d does not exist or syscall %d does not exist.\n", pid, syscall);
+			return -EINVAL;
+		}
+	} else {
+
+		if (current_uid() == 0) {
+
+			if (syscall <= NR_syscalls && syscall >= 0 && syscall != MY_CUSTOM_SYSCALL) {
+
+				spin_lock(pidlist_lock);
+
+				if (table[syscall].monitored < 2) {
+					table[syscall].monitored = 2;
+					spin_unlock(pidlist_lock)
+				} else {
+					printk(KERN_ERR "all processes already monitored for system call %d.\n", syscall);
+					return -EBUSY;
+				}
+			} else {
+
+				printk(KERN_ERR "%d is not a valid system call number.\n", syscall);
+				return -EINVAL;
+			}
+
+		} else {
+			printk(KERN_ERR "process %d does not have permission", current->pid);
+			return -EPERM;
+		}
+	}
+}
+
+asmlinkage long my_syscall_stopmon(int syscall, int pid)
+{
+	if (pid) {
+
+		if (pid_task(find_vpid(pid), PIDTYPE_PID) && 
+			syscall <= NR_syscalls && syscall >= 0 && syscall != MY_CUSTOM_SYSCALL) {
+
+			if (check_pid_from_list(pid, current->pid) == 0 || current_uid() == 0) {
+
+				spin_lock(pidlist_lock);
+
+				if (check_pid_monitored(syscall, pid)) {
+					del_pid_sysc(pid, syscall);	
+					spin_unlock(pidlist_lock);
+				} else {
+					printk(KERN_ERR "process %d already released for syscall %d.\n", pid, syscall);
+					spin_unlock(pidlist_lock);
+					return -EBUSY;
+				}
+			} else {
+
+				printk(KERN_ERR "process %d does not have permission", current->pid);
+				return -EPERM;
+			}
+
+		} else {
+
+			printk(KERN_ERR "process with pid %d does not exist or syscall %d does not exist.\n", pid, syscall);
+			return -EINVAL;
+		}
+	} else {
+
+		if (current_uid() == 0) {
+
+			if (syscall <= NR_syscalls && syscall >= 0 && syscall != MY_CUSTOM_SYSCALL) {
+
+				spin_lock(pidlist_lock);
+
+				if (table[syscall].monitored > 0) {
+					table[syscall].monitored = 0;
+					spin_unlock(pidlist_lock)
+				} else {
+					printk(KERN_ERR "all processes already released for system call %d.\n", syscall);
+					return -EBUSY;
+				}
+			} else {
+
+				printk(KERN_ERR "%d is not a valid system call number.\n", syscall);
+				return -EINVAL;
+			}
+
+		} else {
+			printk(KERN_ERR "process %d does not have permission", current->pid);
+			return -EPERM;
+		}
+	}
 }
 
 /**
@@ -364,13 +579,34 @@ long (*orig_custom_syscall)(void);
  *   where some_list is a "struct list_head". 
  * - Ensure synchronization as needed.
  */
-static int init_function(void) {
+static int init_function(void) 
+{	
+	spin_lock(calltable_lock);
+	set_addr_rw((unsigned long)(sys_call_table + MY_CUSTOM_SYSCALL));
 
+	orig_custom_syscall = sys_call_table[MY_CUSTOM_SYSCALL];
+	sys_call_table = & my_syscall;
 
+	set_addr_ro((unsigned long)(sys_call_table + MY_CUSTOM_SYSCALL));
+	set_addr_rw((unsigned long)(sys_call_table + __NR_exit_group));
 
+	orig_exit_group = sys_call_table[__NR_exit_group];
+	sys_call_table[__NR_exit_group] = & my_exit_group;
 
+	set_addr_ro((unsigned long)(sys_call_table + __NR_exit_group));
+	spin_unlock(calltable_lock);
 
+	spin_lock(pidlist_lock);
 
+	mytable * iterator = table;
+	for (;iterator <= NR_syscalls; iterator++) {
+		iterator->monitored = 0;
+		iterator->intercepted = 0;
+		iterator->listcount = 0;
+		LIST_HEAD(iterator->my_list);
+	}
+
+	spin_unlock(pidlist_lock);
 
 	return 0;
 }
@@ -387,7 +623,29 @@ static int init_function(void) {
  */
 static void exit_function(void)
 {        
+	spin_lock(calltable_lock);
+	set_addr_rw((unsigned long)(sys_call_table + MY_CUSTOM_SYSCALL));
 
+	sys_call_table[MY_CUSTOM_SYSCALL] = & orig_custom_syscall;
+
+	set_addr_ro((unsigned long)(sys_call_table + MY_CUSTOM_SYSCALL));
+	set_addr_rw((unsigned long)(sys_call_table + __NR_exit_group));
+
+	sys_call_table[__NR_exit_group] = & orig_exit_group;
+
+	set_addr_ro((unsigned long)(sys_call_table + __NR_exit_group));
+	spin_unlock(calltable_lock);
+
+	spin_lock(pidlist_lock);
+
+	int  sysc = 0;
+	for (;sysc <= NR_syscalls; sysc++) {
+		destroy_list(sysc);	
+	}
+
+	spin_unlock(pidlist_lock);
+
+	return 0;
 
 
 
