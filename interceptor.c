@@ -373,7 +373,7 @@ asmlinkage long my_syscall_intercept(int syscall, int pid)
 				spin_lock(&calltable_lock);
 				set_addr_rw((unsigned long)(sys_call_table + syscall));
 
-				table[syscall].f = (long (*)(struct pt_regs)) & sys_call_table[syscall];
+				table[syscall].f = & sys_call_table[syscall];
 				sys_call_table[syscall] = & interceptor;
 
 				set_addr_ro((unsigned long)(sys_call_table + syscall));
@@ -498,6 +498,8 @@ asmlinkage long my_syscall_startmon(int syscall, int pid)
 			return -EPERM;
 		}
 	}
+
+	return 0;
 }
 
 asmlinkage long my_syscall_stopmon(int syscall, int pid)
@@ -556,6 +558,7 @@ asmlinkage long my_syscall_stopmon(int syscall, int pid)
 			return -EPERM;
 		}
 	}
+	return 0;
 }
 
 /**
