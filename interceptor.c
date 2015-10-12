@@ -373,7 +373,7 @@ asmlinkage long my_syscall_intercept(int syscall, int pid)
 				spin_lock(&calltable_lock);
 				set_addr_rw((unsigned long)(sys_call_table + syscall));
 
-				table[syscall].f = & sys_call_table[syscall];
+				table[syscall].f = sys_call_table[syscall];
 				sys_call_table[syscall] = & interceptor;
 
 				set_addr_ro((unsigned long)(sys_call_table + syscall));
@@ -412,7 +412,7 @@ asmlinkage long my_syscall_release(int syscall, int pid)
 				spin_lock(&calltable_lock);
 				set_addr_rw((unsigned long) (table + syscall));
 
-				sys_call_table[syscall] = & table[syscall].f;
+				sys_call_table[syscall] = table[syscall].f;
 
 				set_addr_ro((unsigned long) (table + syscall));
 				spin_unlock(&calltable_lock);
@@ -631,12 +631,12 @@ static void exit_function(void)
 	spin_lock(&calltable_lock);
 	set_addr_rw((unsigned long)(sys_call_table + MY_CUSTOM_SYSCALL));
 
-	sys_call_table[MY_CUSTOM_SYSCALL] = & orig_custom_syscall;
+	sys_call_table[MY_CUSTOM_SYSCALL] = orig_custom_syscall;
 
 	set_addr_ro((unsigned long)(sys_call_table + MY_CUSTOM_SYSCALL));
 	set_addr_rw((unsigned long)(sys_call_table + __NR_exit_group));
 
-	sys_call_table[__NR_exit_group] = & orig_exit_group;
+	sys_call_table[__NR_exit_group] = orig_exit_group;
 
 	set_addr_ro((unsigned long)(sys_call_table + __NR_exit_group));
 	spin_unlock(&calltable_lock);
