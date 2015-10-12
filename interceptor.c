@@ -373,7 +373,7 @@ asmlinkage long my_syscall_intercept(int syscall, int pid)
 				spin_lock(&calltable_lock);
 				set_addr_rw((unsigned long)(sys_call_table + syscall));
 
-				table[syscall].f =  & sys_call_table[syscall];
+				table[syscall].f = (long (*)(struct pt_regs)) & sys_call_table[syscall];
 				sys_call_table[syscall] = & interceptor;
 
 				set_addr_ro((unsigned long)(sys_call_table + syscall));
@@ -482,7 +482,7 @@ asmlinkage long my_syscall_startmon(int syscall, int pid)
 
 				if (table[syscall].monitored < 2) {
 					table[syscall].monitored = 2;
-					spin_unlock(&pidlist_lock)
+					spin_unlock(&pidlist_lock);
 				} else {
 					printk(KERN_ERR "all processes already monitored for system call %d.\n", syscall);
 					return -EBUSY;
@@ -581,11 +581,13 @@ long (*orig_custom_syscall)(void);
  */
 static int init_function(void) 
 {	
+	mytable * iterator;
+
 	spin_lock(&calltable_lock);
 	set_addr_rw((unsigned long)(sys_call_table + MY_CUSTOM_SYSCALL));
 
 	orig_custom_syscall = sys_call_table[MY_CUSTOM_SYSCALL];
-	sys_call_table = & my_syscall;
+	sys_call_table[MY_CUSTOM_SYSCALL] = & my_syscall;
 
 	set_addr_ro((unsigned long)(sys_call_table + MY_CUSTOM_SYSCALL));
 	set_addr_rw((unsigned long)(sys_call_table + __NR_exit_group));
@@ -598,8 +600,8 @@ static int init_function(void)
 
 	spin_lock(&pidlist_lock);
 
-	mytable * iterator = table;
-	for (;iterator <= NR_syscalls; iterator++) {
+	iterator = table;
+	for (;iterator <= table + NR_syscalls; iterator++) {
 		iterator->monitored = 0;
 		iterator->intercepted = 0;
 		iterator->listcount = 0;
@@ -622,7 +624,9 @@ static int init_function(void)
  * - Ensure synchronization, if needed. 01335715304
  */
 static void exit_function(void)
-{        
+{
+	int sysc;
+
 	spin_lock(&calltable_lock);
 	set_addr_rw((unsigned long)(sys_call_table + MY_CUSTOM_SYSCALL));
 
@@ -638,7 +642,7 @@ static void exit_function(void)
 
 	spin_lock(&pidlist_lock);
 
-	int  sysc = 0;
+	sysc = 0;
 	for (;sysc <= NR_syscalls; sysc++) {
 		destroy_list(sysc);	
 	}
