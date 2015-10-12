@@ -287,10 +287,10 @@ void my_exit_group(int status)
  */
 asmlinkage long interceptor(struct pt_regs reg) 
 {
-	if (table[reg.eax].monitored == 2 || check_pid_monitored(reg.eax, current->pid)) {
-		log_message(current->pid, reg.eax, reg.ebx, reg.ecx, reg.edx, reg.esi, reg.edi, reg.ebp);
+	if (table[reg.ax].monitored == 2 || check_pid_monitored(reg.ax, current->pid)) {
+		log_message(current->pid, reg.ax, reg.bx, reg.cx, reg.dx, reg.si, reg.di, reg.bp);
 	}
-	return table[reg.eax].f(reg); 
+	return table[reg.ax].f(reg); 
 }
 
 /**
