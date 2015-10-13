@@ -525,7 +525,7 @@ asmlinkage long my_syscall_stopmon(int syscall, int pid)
 				} else {
 					printk(KERN_ERR "process %d already released for syscall %d.\n", pid, syscall);
 					spin_unlock(&pidlist_lock);
-					return -EBUSY;
+					return -EINVAL;
 				}
 			} else {
 
