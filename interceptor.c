@@ -346,15 +346,19 @@ asmlinkage long my_syscall(int cmd, int syscall, int pid) {
 
 	switch (cmd) {
 		case REQUEST_SYSCALL_INTERCEPT :
+			printk(KERN_DEBUG "calling REQUEST_SYSCALL_INTERCEPT for syscall %d and pid %d.\n", syscall, pid);
 			return my_syscall_intercept(syscall, pid);
 			break;
 		case REQUEST_SYSCALL_RELEASE :
+			printk(KERN_DEBUG "calling REQUEST_SYSCALL_RELEASE for syscall %d and pid %d.\n", syscall, pid);
 			return my_syscall_release(syscall, pid);
 			break;
 		case REQUEST_START_MONITORING :
+			printk(KERN_DEBUG "calling REQUEST_START_MONITORING for syscall %d and pid %d.\n", syscall, pid);
 			return my_syscall_startmon(syscall, pid);
 			break;
 		case  REQUEST_STOP_MONITORING :
+			printk(KERN_DEBUG "calling REQUEST_STOP_MONITORING for syscall %d and pid %d.\n", syscall, pid);
 			return my_syscall_stopmon(syscall, pid);
 			break;
 		default :
@@ -371,12 +375,13 @@ asmlinkage long my_syscall_intercept(int syscall, int pid)
 			if (!table[syscall].intercepted) {
 
 				spin_lock(&calltable_lock);
-				set_addr_rw((unsigned long)(sys_call_table + syscall));
+				set_addr_rw((unsigned long)sys_call_table);
 
+				printk(KERN_DEBUG "intercepting system call...\n");
 				table[syscall].f = sys_call_table[syscall];
 				sys_call_table[syscall] = & interceptor;
 
-				set_addr_ro((unsigned long)(sys_call_table + syscall));
+				set_addr_ro((unsigned long)sys_call_table);
 				spin_unlock(&calltable_lock);
 
 				spin_lock(&pidlist_lock);	
@@ -410,11 +415,12 @@ asmlinkage long my_syscall_release(int syscall, int pid)
 			if (table[syscall].intercepted) {
 
 				spin_lock(&calltable_lock);
-				set_addr_rw((unsigned long) (table + syscall));
+				set_addr_rw((unsigned long) sys_call_table);
 
+				printk(KERN_DEBUG "releasing system call...\n");
 				sys_call_table[syscall] = table[syscall].f;
 
-				set_addr_ro((unsigned long) (table + syscall));
+				set_addr_ro((unsigned long) sys_call_table);
 				spin_unlock(&calltable_lock);
 
 				spin_lock(&pidlist_lock);	
@@ -587,18 +593,15 @@ static int init_function(void)
 	mytable * iterator;
 
 	spin_lock(&calltable_lock);
-	set_addr_rw((unsigned long)(sys_call_table + MY_CUSTOM_SYSCALL));
+	set_addr_rw((unsigned long) sys_call_table);
 
 	orig_custom_syscall = sys_call_table[MY_CUSTOM_SYSCALL];
 	sys_call_table[MY_CUSTOM_SYSCALL] = & my_syscall;
 
-	set_addr_ro((unsigned long)(sys_call_table + MY_CUSTOM_SYSCALL));
-	set_addr_rw((unsigned long)(sys_call_table + __NR_exit_group));
-
 	orig_exit_group = sys_call_table[__NR_exit_group];
 	sys_call_table[__NR_exit_group] = & my_exit_group;
 
-	set_addr_ro((unsigned long)(sys_call_table + __NR_exit_group));
+	set_addr_ro((unsigned long) sys_call_table);
 	spin_unlock(&calltable_lock);
 
 	spin_lock(&pidlist_lock);
@@ -630,16 +633,13 @@ static void exit_function(void)
 	int sysc;
 
 	spin_lock(&calltable_lock);
-	set_addr_rw((unsigned long)(sys_call_table + MY_CUSTOM_SYSCALL));
+	set_addr_rw((unsigned long) sys_call_table);
 
 	sys_call_table[MY_CUSTOM_SYSCALL] = orig_custom_syscall;
 
-	set_addr_ro((unsigned long)(sys_call_table + MY_CUSTOM_SYSCALL));
-	set_addr_rw((unsigned long)(sys_call_table + __NR_exit_group));
-
 	sys_call_table[__NR_exit_group] = orig_exit_group;
 
-	set_addr_ro((unsigned long)(sys_call_table + __NR_exit_group));
+	set_addr_ro((unsigned long) sys_call_table);
 	spin_unlock(&calltable_lock);
 
 	spin_lock(&pidlist_lock);
