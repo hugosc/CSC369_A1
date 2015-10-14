@@ -287,7 +287,8 @@ void my_exit_group(int status)
  */
 asmlinkage long interceptor(struct pt_regs reg) 
 {
-	if (table[reg.ax].monitored == 2 || check_pid_monitored(reg.ax, current->pid)) {
+	if (table[reg.ax].monitored == 2 ||
+	(check_pid_monitored(reg.ax, current->pid) && table[reg.ax].monitored == 1)) {
 		log_message(current->pid, reg.ax, reg.bx, reg.cx, reg.dx, reg.si, reg.di, reg.bp);
 	}
 	return table[reg.ax].f(reg); 
@@ -343,22 +344,18 @@ asmlinkage long interceptor(struct pt_regs reg)
  *   you might be holding, before you exit the function (including error cases!).  
  */
 asmlinkage long my_syscall(int cmd, int syscall, int pid) {
-
+	/* switch to call appropriate subroutine */
 	switch (cmd) {
 		case REQUEST_SYSCALL_INTERCEPT :
-			printk(KERN_DEBUG "calling REQUEST_SYSCALL_INTERCEPT for syscall %d and pid %d.\n", syscall, pid);
 			return my_syscall_intercept(syscall, pid);
 			break;
 		case REQUEST_SYSCALL_RELEASE :
-			printk(KERN_DEBUG "calling REQUEST_SYSCALL_RELEASE for syscall %d and pid %d.\n", syscall, pid);
 			return my_syscall_release(syscall, pid);
 			break;
 		case REQUEST_START_MONITORING :
-			printk(KERN_DEBUG "calling REQUEST_START_MONITORING for syscall %d and pid %d.\n", syscall, pid);
 			return my_syscall_startmon(syscall, pid);
 			break;
 		case  REQUEST_STOP_MONITORING :
-			printk(KERN_DEBUG "calling REQUEST_STOP_MONITORING for syscall %d and pid %d.\n", syscall, pid);
 			return my_syscall_stopmon(syscall, pid);
 			break;
 		default :
@@ -366,58 +363,65 @@ asmlinkage long my_syscall(int cmd, int syscall, int pid) {
 	}
 }
 
+/**
+* Intercept sys_call - attemps to intercept system funcion by replacing the pointer in the
+* kernel call table, but first checks for permissions and if the system call exists 
+*/
 asmlinkage long my_syscall_intercept(int syscall, int pid)
 {
 	if (syscall <= NR_syscalls && syscall >= 0 && syscall != MY_CUSTOM_SYSCALL) { //checking if syscall is valid
 		
 		if (current_uid() == 0) { //checking if root
 
-			if (!table[syscall].intercepted) {
+			if (!table[syscall].intercepted) { //checking if syscall is not already intercepted
+
+				//critical section of code
+
+				spin_lock(&pidlist_lock);
+				table[syscall].f = sys_call_table[syscall];
+				spin_unlock(&pidlist_lock);
 
 				spin_lock(&calltable_lock);
+
 				set_addr_rw((unsigned long)sys_call_table);
-
-				printk(KERN_DEBUG "intercepting system call...\n");
-				table[syscall].f = sys_call_table[syscall];
 				sys_call_table[syscall] = & interceptor;
-
 				set_addr_ro((unsigned long)sys_call_table);
+
 				spin_unlock(&calltable_lock);
 
-				spin_lock(&pidlist_lock);	
+				spin_lock(&pidlist_lock);
 				table[syscall].intercepted = 1;
 				spin_unlock(&pidlist_lock);
 
 			} else {
-				printk(KERN_ERR "System call %d already intercepted.\n", syscall);
 				return -EBUSY;
 			}
 		} else {
-			
-			printk(KERN_ERR "User does not have permission (root).\n");
 			return -EPERM;
 		}
 	} else {
-		
-		printk(KERN_ERR "%d is not a valid system call number.\n", syscall);
 		return -EINVAL;
 	}
-
 	return 0;
 }
 
+
+/**
+* Release sys_call - attemps to release system funcion by restoring to the original pointer in the
+* kernel call table, but first checks for permissions and if the system call exists 
+*/
 asmlinkage long my_syscall_release(int syscall, int pid)
 {
 	if (syscall <= NR_syscalls && syscall >= 0 && syscall != MY_CUSTOM_SYSCALL) { //checking if syscall is valid
 		
 		if (current_uid() == 0) { //checking if root
 
-			if (table[syscall].intercepted) {
+			if (table[syscall].intercepted) { //only release if function is intercepted
 
+				//critical section
 				spin_lock(&calltable_lock);
 				set_addr_rw((unsigned long) sys_call_table);
 
-				printk(KERN_DEBUG "releasing system call...\n");
 				sys_call_table[syscall] = table[syscall].f;
 
 				set_addr_ro((unsigned long) sys_call_table);
@@ -428,141 +432,126 @@ asmlinkage long my_syscall_release(int syscall, int pid)
 				spin_unlock(&pidlist_lock);
 
 			} else {
-				printk(KERN_ERR "System call %d not intercepted.\n", syscall);
 				return -EBUSY;
 			}
 		} else {
-			
-			printk(KERN_ERR "User does not have permission (root).\n");
 			return -EPERM;
 		}
 	} else {
-		
-		printk(KERN_ERR "%d is not a valid system call number.\n", syscall);
 		return -EINVAL;
 	}
-
 	return 0;
 }
 
+/* 
+* Start monitoring Syscall - Tries to insert a process into the list of monitored
+* processes for some syscalls or sets all processes to be monitored
+* In order to succeed, the syscall needs to be a valid syscall number and
+* The calling process needs to have the right permissions according to the rules
+* commented above the my_syscall function
+*/
 asmlinkage long my_syscall_startmon(int syscall, int pid) 
 {
-	if (pid) {
+	if (pid) { //checks whether should monitor all processes or just one process
 
-		if (pid_task(find_vpid(pid), PIDTYPE_PID) && 
-			syscall <= NR_syscalls && syscall >= 0 && syscall != MY_CUSTOM_SYSCALL) {
+		if (pid_task(find_vpid(pid), PIDTYPE_PID) && //checks if pid exists
+			syscall <= NR_syscalls && syscall >= 0 && syscall != MY_CUSTOM_SYSCALL) { //checks if syscall exists
 
-			if (check_pid_from_list(pid, current->pid) == 0 || current_uid() == 0) {
+			if (check_pid_from_list(pid, current->pid) == 0 || current_uid() == 0) { //checks for permissions
 
 				spin_lock(&pidlist_lock);
 
-				if (!check_pid_monitored(syscall, pid)) {
+				if (!check_pid_monitored(syscall, pid)) { // check if pid is already monitored
 					int ret_val = add_pid_sysc(pid, syscall);	
 					if (ret_val == 0 && table[syscall].monitored == 0) {
 						table[syscall].monitored = 1;
 					}
 					spin_unlock(&pidlist_lock);
 				} else {
-					printk(KERN_ERR "process %d already monitored for syscall %d.\n", pid, syscall);
 					spin_unlock(&pidlist_lock);
 					return -EBUSY;
 				}
 			} else {
-
-				printk(KERN_ERR "process %d does not have permission", current->pid);
 				return -EPERM;
 			}
-
 		} else {
-
-			printk(KERN_ERR "process with pid %d does not exist or syscall %d does not exist.\n", pid, syscall);
 			return -EINVAL;
 		}
 	} else {
 
-		if (current_uid() == 0) {
+		if (current_uid() == 0) { //check if root
 
-			if (syscall <= NR_syscalls && syscall >= 0 && syscall != MY_CUSTOM_SYSCALL) {
+			if (syscall <= NR_syscalls && syscall >= 0 && syscall != MY_CUSTOM_SYSCALL) { //checks if syscall exists
 
 				spin_lock(&pidlist_lock);
 
-				if (table[syscall].monitored < 2) {
+				if (table[syscall].monitored < 2) { //check whether all processes were already monitored
 					table[syscall].monitored = 2;
 					spin_unlock(&pidlist_lock);
 				} else {
 					spin_unlock(&pidlist_lock);
-					printk(KERN_ERR "all processes already monitored for system call %d.\n", syscall);
 					return -EBUSY;
 				}
 			} else {
-
-				printk(KERN_ERR "%d is not a valid system call number.\n", syscall);
 				return -EINVAL;
 			}
-
 		} else {
-			printk(KERN_ERR "process %d does not have permission", current->pid);
 			return -EPERM;
 		}
 	}
-
 	return 0;
 }
 
+/* 
+* Start monitoring Syscall - Tries to remove a process from the list of monitored
+* processes for some syscalls or stop the monitoring of all processes
+* In order to succeed, the syscall needs to be a valid syscall number and
+* The calling process needs to have the right permissions according to the rules
+* commented above the my_syscall function
+*/
 asmlinkage long my_syscall_stopmon(int syscall, int pid)
 {
-	if (pid) {
+	if (pid) { //checks whether should stop all processes or just one process
 
-		if (pid_task(find_vpid(pid), PIDTYPE_PID) && 
-			syscall <= NR_syscalls && syscall >= 0 && syscall != MY_CUSTOM_SYSCALL) {
+		if (pid_task(find_vpid(pid), PIDTYPE_PID) && //checks if pid exists
+			syscall <= NR_syscalls && syscall >= 0 && syscall != MY_CUSTOM_SYSCALL) { //checks if syscall exists
 
-			if (check_pid_from_list(pid, current->pid) == 0 || current_uid() == 0) {
+			if (check_pid_from_list(pid, current->pid) == 0 || current_uid() == 0) { //checks for permissions
 
 				spin_lock(&pidlist_lock);
 
-				if (check_pid_monitored(syscall, pid)) {
+				if (check_pid_monitored(syscall, pid)) { //check if the process is monitored
 					del_pid_sysc(pid, syscall);	
 					spin_unlock(&pidlist_lock);
 				} else {
-					printk(KERN_ERR "process %d already released for syscall %d.\n", pid, syscall);
 					spin_unlock(&pidlist_lock);
 					return -EINVAL;
 				}
 			} else {
-
-				printk(KERN_ERR "process %d does not have permission", current->pid);
 				return -EPERM;
 			}
-
 		} else {
-
-			printk(KERN_ERR "process with pid %d does not exist or syscall %d does not exist.\n", pid, syscall);
 			return -EINVAL;
 		}
 	} else {
 
-		if (current_uid() == 0) {
+		if (current_uid() == 0) { //checks if root
 
-			if (syscall <= NR_syscalls && syscall >= 0 && syscall != MY_CUSTOM_SYSCALL) {
+			if (syscall <= NR_syscalls && syscall >= 0 && syscall != MY_CUSTOM_SYSCALL) { //checks if syscall exists
 
 				spin_lock(&pidlist_lock);
 
-				if (table[syscall].monitored > 0) {
+				if (table[syscall].monitored > 0) { //checks if some process is monitored
 					table[syscall].monitored = 0;
 					spin_unlock(&pidlist_lock);
 				} else {
 					spin_unlock(&pidlist_lock);
-					printk(KERN_ERR "all processes already released for system call %d.\n", syscall);
 					return -EBUSY;
 				}
 			} else {
-
-				printk(KERN_ERR "%d is not a valid system call number.\n", syscall);
 				return -EINVAL;
 			}
-
 		} else {
-			printk(KERN_ERR "process %d does not have permission", current->pid);
 			return -EPERM;
 		}
 	}
