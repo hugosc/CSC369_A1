@@ -490,6 +490,7 @@ asmlinkage long my_syscall_startmon(int syscall, int pid)
 					table[syscall].monitored = 2;
 					spin_unlock(&pidlist_lock);
 				} else {
+					spin_unlock(&pid_list);
 					printk(KERN_ERR "all processes already monitored for system call %d.\n", syscall);
 					return -EBUSY;
 				}
@@ -550,6 +551,7 @@ asmlinkage long my_syscall_stopmon(int syscall, int pid)
 					table[syscall].monitored = 0;
 					spin_unlock(&pidlist_lock);
 				} else {
+					spin_unlock(&pid_list);
 					printk(KERN_ERR "all processes already released for system call %d.\n", syscall);
 					return -EBUSY;
 				}
